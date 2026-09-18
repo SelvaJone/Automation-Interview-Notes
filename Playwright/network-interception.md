@@ -8,8 +8,8 @@ This allows us to:
 
 * Inspect requests
 * Continue requests to the real server
+* Modify requests
 * Mock API responses
-* Modify requests/responses
 * Block requests
 * Simulate server errors
 
@@ -117,19 +117,6 @@ await page.route(
 );
 ```
 
-If the application sends:
-
-```text
-GET https://example.com/products
-```
-
-Playwright can print:
-
-```text
-https://example.com/products
-GET
-```
-
 ---
 
 # 4. `route.continue()`
@@ -140,7 +127,7 @@ GET
 await route.continue();
 ```
 
-### Example
+Example:
 
 ```javascript
 await page.route(
@@ -170,71 +157,303 @@ Real Server
 Real Response
 ```
 
-### When to use it?
+---
 
-Use `continue()` when you want to:
+# 5. Request Modification
 
-* Monitor requests
-* Log requests
-* Inspect requests
-* Allow the real API call
+Network interception can also be used to **modify a request before sending it to the server**.
+
+We use:
+
+```javascript
+route.continue({
+    ...
+});
+```
+
+This is different from simply:
+
+```javascript
+await route.continue();
+```
+
+The second version sends the original request unchanged.
 
 ---
 
-# 5. `route.fulfill()`
+# 6. Modify Request Headers
 
-`route.fulfill()` allows us to provide our own response instead of calling the real server.
+Suppose the application sends:
 
-This is commonly used for **mocking API responses**.
+```text
+Authorization: Bearer old-token
+```
 
-### Example
+We can replace it with another token.
 
 ```javascript
 await page.route(
-    '**/products',
+    '**/customers',
     async route => {
-        await route.fulfill({
-            status: 200,
-            contentType: 'application/json',
-            body: JSON.stringify({
-                products: [
-                    {
-                        id: 1,
-                        name: 'Laptop',
-                        price: 1000
-                    }
-                ]
-            })
+
+        await route.continue({
+            headers: {
+                ...route.request().headers(),
+                'Authorization': 'Bearer new-token'
+            }
         });
+
     }
 );
 ```
 
-The real API is not called.
+### Important
 
-Playwright returns our mocked response to the application.
+```javascript
+...route.request().headers()
+```
+
+keeps the existing headers.
+
+Then:
+
+```javascript
+'Authorization': 'Bearer new-token'
+```
+
+replaces the Authorization header.
 
 ### Flow
 
 ```text
-Application
-     ↓
-API Request
-     ↓
+Original Request
+Authorization: Bearer old-token
+        ↓
 Playwright intercepts
-     ↓
-route.fulfill()
-     ↓
-Mock Response
-     ↓
-Application
+        ↓
+Modify Authorization
+        ↓
+Authorization: Bearer new-token
+        ↓
+Real Server
 ```
 
 ---
 
-# 6. Mocking a Simple Response
+# 7. Modify a Custom Header
+
+Suppose we want to add a custom header:
+
+```text
+x-test-environment: qa
+```
 
 Example:
+
+```javascript
+await page.route(
+    '**/customers',
+    async route => {
+
+        await route.continue({
+            headers: {
+                ...route.request().headers(),
+                'x-test-environment': 'qa'
+            }
+        });
+
+    }
+);
+```
+
+The original headers are preserved, and the new header is added.
+
+---
+
+# 8. Modify Query Parameters
+
+Suppose the application calls:
+
+```text
+https://example.com/products?category=phone
+```
+
+We can modify the query parameter before sending the request.
+
+```javascript
+await page.route(
+    '**/products?*',
+    async route => {
+
+        const url = new URL(route.request().url());
+
+        url.searchParams.set('category', 'laptop');
+
+        await route.continue({
+            url: url.toString()
+        });
+
+    }
+);
+```
+
+### What happens?
+
+Original:
+
+```text
+/products?category=phone
+```
+
+Modified:
+
+```text
+/products?category=laptop
+```
+
+The modified request is then sent to the real server.
+
+---
+
+# 9. Modify POST Request Data
+
+We can also modify the POST request body.
+
+Suppose the application sends:
+
+```json
+{
+    "name": "Selva",
+    "email": "selva@test.com"
+}
+```
+
+We can change the email before sending it.
+
+```javascript
+await page.route(
+    '**/customers',
+    async route => {
+
+        const postData = route.request().postDataJSON();
+
+        postData.email = 'updated@test.com';
+
+        await route.continue({
+            postData: JSON.stringify(postData)
+        });
+
+    }
+);
+```
+
+### Flow
+
+```text
+Application sends
+
+{
+    "name": "Selva",
+    "email": "selva@test.com"
+}
+
+        ↓
+
+Playwright intercepts
+
+        ↓
+
+Modify email
+
+        ↓
+
+{
+    "name": "Selva",
+    "email": "updated@test.com"
+}
+
+        ↓
+
+Real Server
+```
+
+---
+
+# 10. Modify Multiple Parts of a Request
+
+We can modify headers and POST data in the same interception.
+
+```javascript
+await page.route(
+    '**/customers',
+    async route => {
+
+        const postData = route.request().postDataJSON();
+
+        postData.email = 'test@example.com';
+
+        await route.continue({
+            headers: {
+                ...route.request().headers(),
+                'x-test-environment': 'qa'
+            },
+            postData: JSON.stringify(postData)
+        });
+
+    }
+);
+```
+
+This allows us to change multiple parts of the request before it reaches the server.
+
+---
+
+# 11. `continue()` vs Modified `continue()`
+
+### Original request
+
+```javascript
+await route.continue();
+```
+
+The request goes to the server unchanged.
+
+### Modified request
+
+```javascript
+await route.continue({
+    headers: {
+        ...route.request().headers(),
+        'x-test': 'qa'
+    }
+});
+```
+
+The request goes to the server with the modified header.
+
+---
+
+# 12. `continue()` vs `fulfill()` vs `abort()`
+
+| Method                    | Purpose                                |
+| ------------------------- | -------------------------------------- |
+| `route.continue()`        | Send original request to real server   |
+| `route.continue({ ... })` | Modify request and send to real server |
+| `route.fulfill()`         | Return a mocked response               |
+| `route.abort()`           | Block the request                      |
+
+### Easy Memory Trick
+
+```text
+continue()          → Let it go
+continue(options)   → Modify it and let it go
+fulfill()           → Give my response
+abort()             → Stop it
+```
+
+---
+
+# 13. Mocking an API Response
 
 ```javascript
 await page.route(
@@ -256,26 +475,11 @@ await page.route(
 );
 ```
 
-The application receives:
-
-```json
-{
-    "products": [
-        {
-            "id": 1,
-            "name": "Phone"
-        }
-    ]
-}
-```
+The real API is not called.
 
 ---
 
-# 7. Mocking a Server Error
-
-We can also simulate server errors.
-
-For example, HTTP `500 Internal Server Error`:
+# 14. Mocking a Server Error
 
 ```javascript
 await page.route(
@@ -291,41 +495,13 @@ await page.route(
 );
 ```
 
-This is useful for testing how the application behaves when the backend is unavailable.
-
-### Example Test Scenario
-
-```text
-User opens Products
-        ↓
-Application calls Products API
-        ↓
-Playwright intercepts request
-        ↓
-Playwright returns HTTP 500
-        ↓
-Application should show error message
-```
-
-We can then verify the UI:
-
-```javascript
-await expect(
-    page.locator('#error-message')
-).toBeVisible();
-```
+This is useful for testing how the application handles backend failures.
 
 ---
 
-# 8. `route.abort()`
+# 15. `route.abort()`
 
 `route.abort()` blocks the network request.
-
-```javascript
-await route.abort();
-```
-
-### Example
 
 ```javascript
 await page.route(
@@ -336,27 +512,9 @@ await page.route(
 );
 ```
 
-The request will not reach the server.
-
-### Flow
-
-```text
-Application
-     ↓
-API Request
-     ↓
-Playwright intercepts
-     ↓
-route.abort()
-     ↓
-Request blocked
-```
-
 ---
 
-# 9. Blocking Ads
-
-A common real-world example is blocking advertisement requests.
+# 16. Blocking Ads
 
 ```javascript
 await page.route(
@@ -367,250 +525,180 @@ await page.route(
 );
 ```
 
-Any matching request will be blocked.
-
 ---
 
-# 10. `continue()` vs `fulfill()` vs `abort()`
+# 17. Why Request Modification is Useful
 
-| Method             | Purpose                     |
-| ------------------ | --------------------------- |
-| `route.continue()` | Send request to real server |
-| `route.fulfill()`  | Return a mocked response    |
-| `route.abort()`    | Block the request           |
+Request modification is useful when we want to test different request conditions without changing the application code.
 
-### Easy Memory Trick
+Examples:
+
+### Change authentication
 
 ```text
-continue() → Let it go
-fulfill()  → Give my response
-abort()    → Stop it
+Authorization: Bearer test-token
+```
+
+### Add test headers
+
+```text
+x-test-environment: qa
+```
+
+### Change query parameters
+
+```text
+category=phone
+        ↓
+category=laptop
+```
+
+### Change request body
+
+```text
+email: old@test.com
+        ↓
+email: new@test.com
 ```
 
 ---
 
-# 11. Complete Example
+# 18. Complete Request Modification Example
 
 ```javascript
-import { test, expect } from '@playwright/test';
+import { test } from '@playwright/test';
 
-test('mock products API', async ({ page }) => {
+test('modify API request', async ({ page }) => {
 
     await page.route(
-        '**/products',
+        '**/customers',
         async route => {
 
-            await route.fulfill({
-                status: 200,
-                contentType: 'application/json',
-                body: JSON.stringify({
-                    products: [
-                        {
-                            id: 1,
-                            name: 'Laptop',
-                            price: 1000
-                        },
-                        {
-                            id: 2,
-                            name: 'Phone',
-                            price: 500
-                        }
-                    ]
-                })
+            const postData = route.request().postDataJSON();
+
+            postData.email = 'updated@test.com';
+
+            await route.continue({
+                headers: {
+                    ...route.request().headers(),
+                    'x-test-environment': 'qa'
+                },
+                postData: JSON.stringify(postData)
             });
 
         }
     );
 
-    await page.goto('https://example.com');
+    // Application action that sends POST /customers
+    // await page.locator('#create-customer').click();
 
-    // Continue UI test here
 });
 ```
 
-The Products API response is completely controlled by the test.
-
 ---
 
-# 12. Why Network Interception is Useful
+# 19. Important Interview Question
 
-Network interception is useful when:
+### How do you modify a request in Playwright?
 
-### 1. Backend is unavailable
+**Answer:**
 
-You can mock the API response.
+> We can intercept the request using `page.route()` and use `route.continue()` with options such as `headers`, `url`, or `postData` to modify the request before sending it to the server.
 
-### 2. Need to test error scenarios
-
-For example:
-
-```text
-500 Server Error
-404 Not Found
-401 Unauthorized
-403 Forbidden
-```
-
-### 3. Need predictable test data
-
-Instead of depending on changing production/test API data, return fixed data.
-
-### 4. Test slow API behavior
-
-You can simulate different network conditions.
-
-### 5. Block unnecessary requests
-
-For example:
-
-```text
-Ads
-Analytics
-Tracking
-Third-party requests
-```
-
----
-
-# 13. Network Interception vs API Testing
-
-These are related but different.
-
-### API Testing
-
-You directly send API requests:
+Example:
 
 ```javascript
-const response = await request.get(
-    'https://api.example.com/products'
-);
-```
-
-You are testing the API itself.
-
-### Network Interception
-
-You intercept a request made by the application:
-
-```javascript
-await page.route(
-    '**/products',
-    async route => {
-        await route.fulfill({
-            status: 200,
-            body: JSON.stringify({
-                products: []
-            })
-        });
+await route.continue({
+    headers: {
+        ...route.request().headers(),
+        'x-test': 'qa'
     }
-);
-```
-
-You are controlling or observing the application's network traffic.
-
-### Simple Difference
-
-```text
-API Testing
-    ↓
-Test API directly
-
-Network Interception
-    ↓
-Control/observe API calls made by the application
-```
-
----
-
-# 14. Important Interview Question
-
-### What is network interception in Playwright?
-
-**Answer:**
-
-> Network interception in Playwright allows us to intercept HTTP requests and responses made by the application. We can inspect, continue, modify, mock, or abort those requests using `page.route()`.
-
----
-
-# 15. Important Interview Question
-
-### What is the difference between `route.continue()` and `route.fulfill()`?
-
-**Answer:**
-
-> `route.continue()` allows the request to proceed to the real server, while `route.fulfill()` provides a custom or mocked response without calling the real server.
-
----
-
-# 16. Important Interview Question
-
-### What does `route.abort()` do?
-
-**Answer:**
-
-> `route.abort()` prevents the intercepted request from reaching the server.
-
----
-
-# 17. Most Important Code to Remember
-
-### Intercept
-
-```javascript
-await page.route(
-    '**/products',
-    async route => {
-        // action
-    }
-);
-```
-
-### Continue
-
-```javascript
-await route.continue();
-```
-
-### Mock
-
-```javascript
-await route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({
-        message: 'Mock response'
-    })
 });
 ```
 
-### Block
+---
+
+# 20. Important Interview Question
+
+### Can Playwright modify request headers?
+
+**Answer:**
+
+Yes. We can use `route.continue()` and provide modified headers.
 
 ```javascript
-await route.abort();
+await route.continue({
+    headers: {
+        ...route.request().headers(),
+        'Authorization': 'Bearer new-token'
+    }
+});
 ```
 
 ---
 
-# Quick Revision
+# 21. Important Interview Question
+
+### Can Playwright modify POST request data?
+
+**Answer:**
+
+Yes. We can read the existing POST body using:
+
+```javascript
+route.request().postDataJSON()
+```
+
+modify it, and pass it back using:
+
+```javascript
+route.continue({
+    postData: JSON.stringify(postData)
+});
+```
+
+---
+
+# 22. Quick Revision
 
 ```text
 page.route()
       ↓
 Intercept request
       ↓
- ┌───────────────┐
- │               │
-continue()    fulfill()    abort()
- │               │            │
-Real API      Mock API      Block
+ ┌───────────────────────────────┐
+ │                               │
+continue()              continue(options)
+ │                               │
+Original request          Modified request
+ │                               │
+ └──────────────┬────────────────┘
+                ↓
+           Real Server
+
+
+fulfill()
+    ↓
+Mock Response
+
+
+abort()
+    ↓
+Block Request
 ```
 
 ### Remember
 
 ```text
-page.route()       → Intercept
-route.request()   → Inspect
-route.continue()  → Real request
-route.fulfill()   → Mock response
-route.abort()     → Block request
+page.route()                    → Intercept
+route.request()                 → Inspect
+route.request().url()           → Get URL
+route.request().method()        → Get HTTP method
+route.request().headers()       → Get headers
+route.request().postDataJSON()  → Get JSON request body
+
+route.continue()                → Send original request
+route.continue({...})           → Modify and send request
+route.fulfill()                 → Mock response
+route.abort()                   → Block request
 ```

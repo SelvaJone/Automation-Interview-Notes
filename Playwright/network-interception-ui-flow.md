@@ -1,4 +1,4 @@
-# Playwright Network Interception – UI to API Flow
+# Playwright Network Interception – UI Flow, Request Modification & Method Filtering
 
 ## 1. Important Concept
 
@@ -365,108 +365,425 @@ The API request could already have happened before Playwright started intercepti
 
 ---
 
-# 9. Three Common Scenarios
+# 9. Request Method Filtering
 
-## Scenario 1 – Continue Original Request
+Sometimes we don't want to intercept **every request** to a URL.
+
+For example, the application may use:
+
+```text
+GET    /customers
+POST   /customers
+PUT    /customers/101
+DELETE /customers/101
+```
+
+We may want to modify **only the POST request**.
+
+We can check the HTTP method using:
+
+```javascript
+route.request().method()
+```
+
+Example:
 
 ```javascript
 await page.route(
     '**/customers',
     async route => {
-        await route.continue();
+
+        if (route.request().method() === 'POST') {
+
+            const postData = route.request().postDataJSON();
+
+            postData.email = 'updated@test.com';
+
+            await route.continue({
+                postData: JSON.stringify(postData)
+            });
+
+        } else {
+            await route.continue();
+        }
     }
 );
 ```
 
-Flow:
+### Flow
 
 ```text
-UI click
+Request
+   ↓
+Does URL match **/customers?
+   ↓
+Yes
+   ↓
+Check HTTP method
+   ↓
+ ┌───────────────┐
+ │               │
+POST           Other
+ │               │
+Modify          Continue
+ │             unchanged
  ↓
-API request
- ↓
-Intercept
- ↓
-Continue unchanged
- ↓
-Real server
+Continue
 ```
 
 ---
 
-## Scenario 2 – Modify Request
+# 10. Why Method Filtering is Important
+
+Suppose `/customers` is used for both:
+
+```text
+GET /customers
+POST /customers
+```
+
+If we write:
+
+```javascript
+await page.route(
+    '**/customers',
+    async route => {
+        // modify request
+    }
+);
+```
+
+the route can match both requests.
+
+If our modification is intended only for POST, we should check:
+
+```javascript
+if (route.request().method() === 'POST')
+```
+
+This prevents us from accidentally trying to modify a GET request.
+
+---
+
+# 11. POST-Only Modification Example
 
 ```javascript
 await page.route(
     '**/customers',
     async route => {
 
-        const postData = route.request().postDataJSON();
+        if (route.request().method() === 'POST') {
 
-        postData.email = 'updated@test.com';
+            const postData = route.request().postDataJSON();
 
-        await route.continue({
-            postData: JSON.stringify(postData)
-        });
+            postData.email = 'updated@test.com';
+
+            await route.continue({
+                postData: JSON.stringify(postData)
+            });
+
+        } else {
+            await route.continue();
+        }
     }
 );
 ```
 
-Flow:
+### Result
+
+For:
 
 ```text
-UI click
- ↓
-API request
- ↓
-Intercept
- ↓
-Modify request
- ↓
-Real server
+POST /customers
+```
+
+The body is modified.
+
+For:
+
+```text
+GET /customers
+```
+
+The request continues unchanged.
+
+---
+
+# 12. Method Filtering with Headers
+
+We can also modify headers only for POST requests:
+
+```javascript
+await page.route(
+    '**/customers',
+    async route => {
+
+        if (route.request().method() === 'POST') {
+
+            await route.continue({
+                headers: {
+                    ...route.request().headers(),
+                    'x-test-environment': 'qa'
+                }
+            });
+
+        } else {
+            await route.continue();
+        }
+    }
+);
 ```
 
 ---
 
-## Scenario 3 – Mock Response
+# 13. Method Filtering with Mocking
+
+We can mock only a specific HTTP method.
+
+For example, mock POST but allow GET to reach the real server:
 
 ```javascript
 await page.route(
     '**/customers',
     async route => {
 
-        await route.fulfill({
-            status: 201,
-            contentType: 'application/json',
-            body: JSON.stringify({
-                id: 101,
-                name: 'Selva',
-                email: 'selva@test.com'
-            })
-        });
+        if (route.request().method() === 'POST') {
+
+            await route.fulfill({
+                status: 201,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    id: 101,
+                    name: 'Selva',
+                    email: 'selva@test.com'
+                })
+            });
+
+        } else {
+            await route.continue();
+        }
     }
 );
 ```
 
-Flow:
+### Flow
 
 ```text
-UI click
- ↓
-API request
- ↓
+GET /customers
+      ↓
+Continue
+      ↓
+Real Server
+
+
+POST /customers
+      ↓
 Intercept
- ↓
+      ↓
 Mock response
- ↓
+      ↓
 Application
 ```
 
-The real server is not called.
+---
+
+# 14. Common HTTP Methods
+
+The method is returned as a string:
+
+```javascript
+route.request().method()
+```
+
+Common values are:
+
+```text
+GET
+POST
+PUT
+PATCH
+DELETE
+```
+
+Example:
+
+```javascript
+if (route.request().method() === 'POST') {
+    // POST logic
+}
+```
+
+Another example:
+
+```javascript
+if (route.request().method() === 'GET') {
+    // GET logic
+}
+```
 
 ---
 
-# 10. `continue()` vs `fulfill()` vs `abort()`
+# 15. Multiple Method Conditions
+
+We can handle different methods differently.
+
+```javascript
+await page.route(
+    '**/customers',
+    async route => {
+
+        const method = route.request().method();
+
+        if (method === 'GET') {
+
+            console.log('GET request');
+
+            await route.continue();
+
+        } else if (method === 'POST') {
+
+            console.log('POST request');
+
+            const postData = route.request().postDataJSON();
+
+            postData.email = 'updated@test.com';
+
+            await route.continue({
+                postData: JSON.stringify(postData)
+            });
+
+        } else {
+
+            await route.continue();
+        }
+    }
+);
+```
+
+---
+
+# 16. Important Rule
+
+Every intercepted request needs to be handled.
+
+For example:
+
+```javascript
+if (method === 'POST') {
+    await route.continue();
+}
+```
+
+But if the method is GET, we also need to handle it:
+
+```javascript
+else {
+    await route.continue();
+}
+```
+
+Otherwise, the request can remain unresolved.
+
+### Easy Pattern
+
+```javascript
+if (condition) {
+    // special handling
+} else {
+    await route.continue();
+}
+```
+
+---
+
+# 17. UI + Method Filtering
+
+A realistic example:
+
+```javascript
+test('modify only POST customer request', async ({ page }) => {
+
+    await page.route(
+        '**/customers',
+        async route => {
+
+            if (route.request().method() === 'POST') {
+
+                const postData = route.request().postDataJSON();
+
+                postData.email = 'qa@test.com';
+
+                await route.continue({
+                    headers: {
+                        ...route.request().headers(),
+                        'x-test-environment': 'qa'
+                    },
+                    postData: JSON.stringify(postData)
+                });
+
+            } else {
+                await route.continue();
+            }
+        }
+    );
+
+    await page.goto('https://example.com');
+
+    // UI action triggers POST /customers
+    await page.locator('#create-customer').click();
+});
+```
+
+The UI click triggers the application's POST request.
+
+Playwright checks the method and modifies only that POST request.
+
+---
+
+# 18. Request Modification vs Method Filtering
+
+These are two separate concepts.
+
+### Request Modification
+
+Changes the request:
+
+```javascript
+await route.continue({
+    headers: {
+        ...route.request().headers(),
+        'x-test': 'qa'
+    }
+});
+```
+
+### Method Filtering
+
+Determines **which requests** should receive special handling:
+
+```javascript
+if (route.request().method() === 'POST') {
+    // modify only POST
+}
+```
+
+They can be combined:
+
+```text
+Intercept
+   ↓
+Check method
+   ↓
+POST?
+   ↓
+Modify request
+   ↓
+Continue
+```
+
+---
+
+# 19. `continue()` vs `fulfill()` vs `abort()`
 
 | Method                  | What happens?                        |
 | ----------------------- | ------------------------------------ |
@@ -486,7 +803,7 @@ abort()            → Stop it
 
 ---
 
-# 11. Common Request Modifications
+# 20. Common Request Modifications
 
 ## Modify Header
 
@@ -499,8 +816,6 @@ await route.continue({
 });
 ```
 
----
-
 ## Add Custom Header
 
 ```javascript
@@ -511,8 +826,6 @@ await route.continue({
     }
 });
 ```
-
----
 
 ## Modify URL
 
@@ -525,8 +838,6 @@ await route.continue({
     url: url.toString()
 });
 ```
-
----
 
 ## Modify POST Body
 
@@ -542,7 +853,7 @@ await route.continue({
 
 ---
 
-# 12. UI + Network Interception Example
+# 21. UI + Network Interception Example
 
 A realistic test might look like this:
 
@@ -586,9 +897,11 @@ Click button
  ↓
 Application
  ↓
-API request
+POST API request
  ↓
 Playwright intercepts
+ ↓
+Check method
  ↓
 Modify request
  ↓
@@ -603,7 +916,7 @@ Verify result
 
 ---
 
-# 13. API Testing vs Network Interception
+# 22. API Testing vs Network Interception
 
 These should not be confused.
 
@@ -653,7 +966,7 @@ Server / Mock response
 
 ---
 
-# 14. Interview Answer
+# 23. Interview Answer
 
 ### Question:
 
@@ -661,7 +974,7 @@ Server / Mock response
 
 ### Answer:
 
-> First, I register a route using `page.route()` before performing the UI action. When the UI action triggers the API request, Playwright intercepts it. I can inspect the request using `route.request()`, modify headers, URL, or POST data, and then use `route.continue()` to send the modified request to the real server.
+> First, I register a route using `page.route()` before performing the UI action. When the UI action triggers the API request, Playwright intercepts it. I can inspect the request using `route.request()`, check its HTTP method, modify headers, URL, or POST data, and then use `route.continue()` to send the modified request to the real server.
 
 Example:
 
@@ -670,13 +983,19 @@ await page.route(
     '**/customers',
     async route => {
 
-        const postData = route.request().postDataJSON();
+        if (route.request().method() === 'POST') {
 
-        postData.email = 'updated@test.com';
+            const postData = route.request().postDataJSON();
 
-        await route.continue({
-            postData: JSON.stringify(postData)
-        });
+            postData.email = 'updated@test.com';
+
+            await route.continue({
+                postData: JSON.stringify(postData)
+            });
+
+        } else {
+            await route.continue();
+        }
     }
 );
 
@@ -685,13 +1004,39 @@ await page.locator('#create-customer').click();
 
 ---
 
-# 15. Key Interview Point
+# 24. Interview Question – Method Filtering
 
-Remember this sentence:
+### Question:
+
+**How can you intercept only POST requests for a particular URL?**
+
+### Answer:
+
+> Use `page.route()` to match the URL and then check `route.request().method()` inside the route handler.
+
+```javascript
+await page.route(
+    '**/customers',
+    async route => {
+
+        if (route.request().method() === 'POST') {
+            // POST-specific logic
+        } else {
+            await route.continue();
+        }
+    }
+);
+```
+
+---
+
+# 25. Key Interview Point
+
+Remember these two sentences:
 
 > **The UI action triggers the API request; `page.route()` intercepts the request.**
 
-This is one of the most important concepts to understand when combining **UI automation and network interception** in Playwright.
+> **The URL identifies which requests to intercept, while `route.request().method()` lets us apply different logic based on HTTP method.**
 
 ---
 
@@ -707,6 +1052,8 @@ UI action
 Application sends API request
      ↓
 Playwright intercepts
+     ↓
+Check URL + HTTP method
      ↓
 ┌──────────────┬──────────────┬──────────────┐
 │              │              │              │
@@ -725,6 +1072,8 @@ Real API      Mock API      Block
 click()                         → UI action / trigger
 page.route()                    → Intercept
 route.request()                 → Inspect request
+route.request().method()        → Get HTTP method
+route.request().url()           → Get URL
 route.request().headers()       → Get headers
 route.request().postDataJSON()  → Get JSON body
 
